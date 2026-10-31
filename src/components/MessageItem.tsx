@@ -13,9 +13,11 @@ import {
   AlertCircle,
   FileCode,
   FileText,
+  Wrench,
 } from 'lucide-react';
 import { Message, FileAttachment } from '../types/chat';
 import { MarkdownRenderer } from '../utils/markdownParser';
+import { ToolExecutionCard } from './ToolExecutionCard';
 
 interface MessageItemProps {
   message: Message;
@@ -54,6 +56,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const isStreaming = message.status === 'streaming';
   const isSending = message.status === 'sending';
   const hasError = message.status === 'error';
+  const hasToolExecutions = Boolean(message.toolExecutions && message.toolExecutions.length > 0);
+  const isExecutingTools = message.toolExecutions?.some((t) => t.status === 'executing');
 
   const handleCopy = async () => {
     try {
@@ -120,11 +124,17 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           <div className="flex items-center justify-between gap-2 mb-1.5">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-xs text-slate-100">
-                {isUser ? 'You' : 'Gemini'}
+                {isUser ? 'You' : 'Gemini Toolbox'}
               </span>
               <span className="text-[11px] text-slate-500">
                 {formatTimestamp(message.timestamp)}
               </span>
+              {!isUser && hasToolExecutions && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-950/80 text-indigo-300 border border-indigo-800/70">
+                  <Wrench className="w-2.5 h-2.5" />
+                  Agent Tools Used
+                </span>
+              )}
             </div>
 
             {isUser && !isEditing && (
@@ -190,6 +200,15 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             </div>
           )}
 
+          {/* Real Tool Execution Cards */}
+          {!isUser && hasToolExecutions && (
+            <div className="mb-3 space-y-2">
+              {message.toolExecutions!.map((tool) => (
+                <ToolExecutionCard key={tool.id} tool={tool} />
+              ))}
+            </div>
+          )}
+
           {isEditing ? (
             <div className="mt-1 space-y-2">
               <textarea
@@ -226,11 +245,13 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                         <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '150ms' }} />
                         <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '300ms' }} />
                       </div>
-                      <span className="ml-1 text-xs font-medium text-slate-400">Gemini is thinking...</span>
+                      <span className="ml-1 text-xs font-medium text-slate-400">
+                        {isExecutingTools ? 'Executing agent tool...' : 'Gemini is thinking...'}
+                      </span>
                     </div>
                   ) : (
                     <div className="relative">
-                      <MarkdownRenderer content={message.content} />
+                      {message.content && <MarkdownRenderer content={message.content} />}
                       {isStreaming && (
                         <span className="inline-block w-1.5 h-4 ml-1 bg-indigo-400 animate-pulse align-middle" />
                       )}

@@ -1,12 +1,14 @@
 {
-  "name": "gemini-chat-studio",
+  "name": "gemini-toolbox",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
     "start": "node server.ts",
+    "test": "tsx test_tools.ts && tsx test_error_handling.ts",
+    "test:live": "tsx test_live_api.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

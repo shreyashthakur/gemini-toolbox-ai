@@ -1,5 +1,13 @@
 import React from 'react';
-import { Sparkles, ArrowRight, Code, Server, Database, FileText } from 'lucide-react';
+import {
+  Sparkles,
+  ArrowRight,
+  Calculator,
+  ArrowRightLeft,
+  Percent,
+  BookOpen,
+  Wrench,
+} from 'lucide-react';
 import { SUGGESTED_PROMPTS, SuggestedPrompt } from '../constants/presets';
 
 interface WelcomeScreenProps {
@@ -8,14 +16,15 @@ interface WelcomeScreenProps {
 
 const getCategoryIcon = (category: string) => {
   switch (category) {
-    case 'Code & Systems':
-      return <Code className="w-4 h-4 text-indigo-400" />;
-    case 'Architecture':
-      return <Server className="w-4 h-4 text-violet-400" />;
-    case 'Data & DB':
-      return <Database className="w-4 h-4 text-emerald-400" />;
-    case 'Strategy & Copy':
-      return <FileText className="w-4 h-4 text-sky-400" />;
+    case 'Calculator Tool':
+      return <Calculator className="w-4 h-4 text-emerald-400" />;
+    case 'Converter Tool':
+      return <ArrowRightLeft className="w-4 h-4 text-sky-400" />;
+    case 'Percentage Tool':
+    case 'Tool & Reasoning':
+      return <Percent className="w-4 h-4 text-amber-400" />;
+    case 'General AI':
+      return <BookOpen className="w-4 h-4 text-violet-400" />;
     default:
       return <Sparkles className="w-4 h-4 text-indigo-400" />;
   }
@@ -26,17 +35,33 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSelectPrompt }) 
     <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 max-w-3xl mx-auto w-full select-none">
       <div className="mb-5 sm:mb-6 flex items-center justify-center">
         <div className="relative flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-linear-to-tr from-indigo-600 via-indigo-500 to-violet-500 text-white shadow-lg shadow-indigo-500/20">
-          <Sparkles className="w-6 h-6 sm:w-7 sm:h-7" />
+          <Wrench className="w-6 h-6 sm:w-7 sm:h-7" />
         </div>
       </div>
 
-      <div className="text-center mb-6 sm:mb-8">
+      <div className="text-center mb-6 sm:mb-7">
         <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight text-slate-100">
-          What would you like to build or explore?
+          Gemini Toolbox AI
         </h1>
         <p className="mt-2 text-xs sm:text-sm md:text-base text-slate-400 max-w-lg mx-auto leading-relaxed">
-          Ask questions, debug code, brainstorm systems architecture, or analyze data with Gemini.
+          Intelligent assistant powered by Google Gemini with real backend function calling for mathematical calculations, unit conversions, and percentage analysis.
         </p>
+
+        {/* Available tools pills */}
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950/70 text-emerald-300 border border-emerald-800/70">
+            <Calculator className="w-3.5 h-3.5" />
+            calculate
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-sky-950/70 text-sky-300 border border-sky-800/70">
+            <ArrowRightLeft className="w-3.5 h-3.5" />
+            convert_units
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-950/70 text-amber-300 border border-amber-800/70">
+            <Percent className="w-3.5 h-3.5" />
+            calculate_percentage
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 w-full">

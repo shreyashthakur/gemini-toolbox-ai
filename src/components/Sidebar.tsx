@@ -9,10 +9,11 @@ import {
   X,
   Pin,
   Settings,
-  Sun,
-  Moon,
-  Sparkles,
   ChevronLeft,
+  Wrench,
+  Calculator,
+  ArrowRightLeft,
+  Percent,
 } from 'lucide-react';
 import { Conversation, AppSettings } from '../types/chat';
 
@@ -43,7 +44,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClose,
   onOpenSettings,
   settings,
-  onUpdateSettings,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -91,14 +91,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return { pinned, today, yesterday, last7Days, older };
   }, [filteredConversations]);
 
-  const handleStartRename = (c: Conversation, e: React.MouseEvent) => {
+  const handleStartRename = (e: React.MouseEvent, c: Conversation) => {
     e.stopPropagation();
     setEditingId(c.id);
     setEditTitle(c.title);
   };
 
-  const handleSaveRename = (id: string, e: React.MouseEvent | React.FormEvent) => {
+  const handleSaveRename = (e: React.MouseEvent | React.FormEvent, id: string) => {
     e.stopPropagation();
+    e.preventDefault();
     if (editTitle.trim()) {
       onRenameConversation(id, editTitle.trim());
     }
@@ -110,106 +111,109 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setEditingId(null);
   };
 
-  const renderConversationItem = (c: Conversation) => {
-    const isActive = c.id === activeConversationId;
-    const isEditing = editingId === c.id;
+  const renderGroup = (title: string, list: Conversation[]) => {
+    if (list.length === 0) return null;
 
     return (
-      <div
-        key={c.id}
-        onClick={() => {
-          onSelectConversation(c.id);
-          if (window.innerWidth < 1024) onClose();
-        }}
-        className={`group relative flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors ${
-          isActive
-            ? 'bg-slate-200/80 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-medium'
-            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-        }`}
-      >
-        <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
-          {c.pinned ? (
-            <Pin className="w-4 h-4 shrink-0 text-indigo-500 fill-indigo-500/20" />
-          ) : (
-            <MessageSquare className="w-4 h-4 shrink-0 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300" />
-          )}
+      <div key={title} className="mb-4">
+        <div className="px-3 mb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+          {title}
+        </div>
+        <div className="space-y-0.5">
+          {list.map((c) => {
+            const isActive = c.id === activeConversationId;
+            const isEditing = editingId === c.id;
 
-          {isEditing ? (
-            <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
-              <input
-                type="text"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveRename(c.id, e);
-                  if (e.key === 'Escape') setEditingId(null);
+            return (
+              <div
+                key={c.id}
+                onClick={() => {
+                  onSelectConversation(c.id);
+                  if (window.innerWidth < 1024) onClose();
                 }}
-                autoFocus
-                className="w-full px-2 py-0.5 text-xs rounded border border-indigo-400 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none"
-              />
-              <button
-                onClick={(e) => handleSaveRename(c.id, e)}
-                className="p-1 hover:text-emerald-500 rounded"
-                title="Save"
+                className={`group relative flex items-center justify-between px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${
+                  isActive
+                    ? 'bg-indigo-950/60 text-indigo-100 font-medium'
+                    : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                }`}
               >
-                <Check className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={handleCancelRename}
-                className="p-1 hover:text-rose-500 rounded"
-                title="Cancel"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ) : (
-            <span className="truncate flex-1 text-[13px]">{c.title || 'Untitled Chat'}</span>
-          )}
-        </div>
+                <div className="flex items-center gap-2 min-w-0 flex-1 mr-1">
+                  <MessageSquare
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      isActive ? 'text-indigo-400' : 'text-slate-500 group-hover:text-slate-400'
+                    }`}
+                  />
 
-        {!isEditing && (
-          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 shrink-0">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onTogglePinConversation(c.id);
-              }}
-              className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors"
-              title={c.pinned ? 'Unpin' : 'Pin to top'}
-            >
-              <Pin className={`w-3.5 h-3.5 ${c.pinned ? 'text-indigo-500 fill-indigo-500/20' : ''}`} />
-            </button>
-            <button
-              onClick={(e) => handleStartRename(c, e)}
-              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors"
-              title="Rename title"
-            >
-              <Edit2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeleteConversation(c.id);
-              }}
-              className="p-1 text-slate-400 hover:text-rose-500 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors"
-              title="Delete conversation"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  };
+                  {isEditing ? (
+                    <form
+                      onSubmit={(e) => handleSaveRename(e, c.id)}
+                      className="flex items-center gap-1 flex-1 min-w-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        className="w-full px-1.5 py-0.5 text-xs rounded bg-slate-900 border border-indigo-500 text-white focus:outline-none"
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={(e) => handleSaveRename(e, c.id)}
+                        className="p-1 hover:text-emerald-400 text-slate-400"
+                      >
+                        <Check className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCancelRename}
+                        className="p-1 hover:text-rose-400 text-slate-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </form>
+                  ) : (
+                    <span className="truncate">{c.title || 'New Conversation'}</span>
+                  )}
+                </div>
 
-  const renderGroup = (label: string, items: Conversation[]) => {
-    if (items.length === 0) return null;
-    return (
-      <div key={label} className="mb-4">
-        <div className="px-3 py-1 text-[11px] font-semibold tracking-wider uppercase text-slate-600 dark:text-slate-300">
-          {label}
+                {!isEditing && (
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTogglePinConversation(c.id);
+                      }}
+                      className={`p-1 rounded hover:bg-slate-700/80 ${
+                        c.pinned ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title={c.pinned ? 'Unpin chat' : 'Pin chat'}
+                    >
+                      <Pin className={`w-3 h-3 ${c.pinned ? 'fill-indigo-400' : ''}`} />
+                    </button>
+                    <button
+                      onClick={(e) => handleStartRename(e, c)}
+                      className="p-1 rounded hover:bg-slate-700/80 text-slate-400 hover:text-slate-200"
+                      title="Rename"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteConversation(c.id);
+                      }}
+                      className="p-1 rounded hover:bg-slate-700/80 text-slate-400 hover:text-rose-400"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <div className="space-y-0.5">{items.map(renderConversationItem)}</div>
       </div>
     );
   };
@@ -231,16 +235,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="p-3.5 border-b border-slate-800/80 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-lg bg-linear-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-xs">
-              <Sparkles className="w-4 h-4" />
+              <Wrench className="w-4 h-4" />
             </div>
-            <span className="font-bold text-slate-900 dark:text-slate-100 tracking-tight text-sm">
-              Gemini Studio
-            </span>
+            <div>
+              <span className="font-bold text-slate-100 tracking-tight text-sm block leading-none">
+                Gemini Toolbox
+              </span>
+              <span className="text-[10px] text-indigo-400 font-mono">Agent Edition</span>
+            </div>
           </div>
 
           <button
             onClick={onClose}
-            className="lg:hidden p-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-md hover:bg-slate-200/60 dark:hover:bg-slate-800"
+            className="lg:hidden p-1.5 text-slate-400 hover:text-slate-200 rounded-md hover:bg-slate-800"
             title="Close sidebar"
           >
             <ChevronLeft className="w-5 h-5" />
@@ -276,7 +283,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-200"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -304,6 +311,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
+        {/* Active Agent Tools Panel */}
+        <div className="p-3 border-t border-slate-800/80 bg-[#070b14]/90 space-y-2">
+          <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+            <span className="flex items-center gap-1.5">
+              <Wrench className="w-3 h-3 text-indigo-400" />
+              Active Agent Tools
+            </span>
+            <span className="text-[10px] text-emerald-400 font-mono">3 / 3 Ready</span>
+          </div>
+
+          <div className="space-y-1.5 text-[11px]">
+            <div className="flex items-center justify-between px-2 py-1 rounded bg-[#0c1220] border border-slate-800/70">
+              <span className="flex items-center gap-1.5 text-slate-300 font-mono">
+                <Calculator className="w-3 h-3 text-emerald-400" />
+                calculate
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950/70 text-emerald-400 border border-emerald-800/60">
+                Safe Math
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between px-2 py-1 rounded bg-[#0c1220] border border-slate-800/70">
+              <span className="flex items-center gap-1.5 text-slate-300 font-mono">
+                <ArrowRightLeft className="w-3 h-3 text-sky-400" />
+                convert_units
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-sky-950/70 text-sky-400 border border-sky-800/60">
+                5 Dimensions
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between px-2 py-1 rounded bg-[#0c1220] border border-slate-800/70">
+              <span className="flex items-center gap-1.5 text-slate-300 font-mono">
+                <Percent className="w-3 h-3 text-amber-400" />
+                calculate_percentage
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-950/70 text-amber-400 border border-amber-800/60">
+                %, Change, Ratio
+              </span>
+            </div>
+          </div>
+        </div>
+
         <div className="p-3 border-t border-slate-800/80 space-y-1 bg-[#090e1a]/60">
           <button
             onClick={onOpenSettings}
@@ -313,7 +363,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Settings className="w-4 h-4 text-slate-400" />
               <span>Settings & Personas</span>
             </div>
-            <span className="text-[11px] text-slate-400 capitalize">{settings.activeModel.split('-')[1] || 'Flash'}</span>
+            <span className="text-[11px] text-slate-400 capitalize">
+              {settings.activeModel.replace('gemini-', '')}
+            </span>
           </button>
         </div>
       </aside>

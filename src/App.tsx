@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowDown, Code2, Cpu, Database, Mail } from 'lucide-react';
-import { Message, Conversation, AppSettings, FileAttachment } from './types/chat';
+import {
+  ArrowDown,
+  Calculator,
+  ArrowRightLeft,
+  Percent,
+  Sparkles,
+  AlertTriangle,
+} from 'lucide-react';
+import { Message, Conversation, AppSettings, FileAttachment, ToolExecution } from './types/chat';
 import { AVAILABLE_MODELS, PERSONA_PRESETS } from './constants/presets';
 import { Sidebar } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
@@ -12,14 +19,14 @@ import { ImagePreviewModal } from './components/ImagePreviewModal';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
-  activeModel: 'gemini-flash-latest',
+  activeModel: 'gemini-3.8-flash',
   systemInstruction: PERSONA_PRESETS[0].systemPrompt,
   temperature: 0.7,
   activePersonaId: 'general',
   streamResponses: true,
 };
 
-const createNewConversation = (model = 'gemini-flash-latest', systemInstruction = ''): Conversation => ({
+const createNewConversation = (model = 'gemini-3.8-flash', systemInstruction = ''): Conversation => ({
   id: `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
   title: 'New Conversation',
   createdAt: Date.now(),
@@ -31,16 +38,17 @@ const createNewConversation = (model = 'gemini-flash-latest', systemInstruction 
 });
 
 const QUICK_CHIPS = [
-  { label: 'Write code', icon: Code2, prompt: 'Write a type-safe debounce utility in TypeScript with cancellation.' },
-  { label: 'Architecture', icon: Cpu, prompt: 'Explain the trade-offs between a Modular Monolith and Microservices.' },
-  { label: 'Optimize SQL', icon: Database, prompt: 'Show high-performance PostgreSQL composite index best practices.' },
-  { label: 'Draft launch', icon: Mail, prompt: 'Draft a compelling product launch email announcement.' },
+  { label: '125 × 48 + 360 / 6', icon: Calculator, prompt: 'Calculate 125 multiplied by 48 plus 360 divided by 6.' },
+  { label: '5 km to miles', icon: ArrowRightLeft, prompt: 'Convert 5 kilometers into miles.' },
+  { label: '18% of 2500', icon: Percent, prompt: 'What is 18 percent of 2500?' },
+  { label: '12% of 850 & explain', icon: Sparkles, prompt: 'Calculate 12% of 850 and explain the result.' },
+  { label: '% increase 250 → 400', icon: Percent, prompt: 'What is the percentage increase from 250 to 400?' },
 ];
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
-      const stored = localStorage.getItem('gemini_chat_studio_settings_v1');
+      const stored = localStorage.getItem('gemini_toolbox_settings_v1');
       if (stored) {
         const parsed = JSON.parse(stored);
         return { ...DEFAULT_SETTINGS, ...parsed, theme: 'dark' };
@@ -51,7 +59,7 @@ export default function App() {
 
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
-      const stored = localStorage.getItem('gemini_chat_studio_conversations_v1');
+      const stored = localStorage.getItem('gemini_toolbox_conversations_v1');
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -68,6 +76,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
@@ -77,17 +86,27 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.add('dark');
     document.body.classList.add('dark');
+
+    // Check server health and API key configuration
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => {
+        if (typeof data.hasApiKey === 'boolean') {
+          setHasApiKey(data.hasApiKey);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     try {
-      localStorage.setItem('gemini_chat_studio_settings_v1', JSON.stringify(settings));
+      localStorage.setItem('gemini_toolbox_settings_v1', JSON.stringify(settings));
     } catch {}
   }, [settings]);
 
   useEffect(() => {
     try {
-      localStorage.setItem('gemini_chat_studio_conversations_v1', JSON.stringify(conversations));
+      localStorage.setItem('gemini_toolbox_conversations_v1', JSON.stringify(conversations));
     } catch {}
   }, [conversations]);
 
@@ -214,10 +233,19 @@ export default function App() {
     ];
 
     for (const msg of activeConversation.messages) {
-      const sender = msg.role === 'user' ? 'User' : 'Gemini';
+      const sender = msg.role === 'user' ? 'User' : 'Gemini Toolbox';
       const time = new Date(msg.timestamp).toLocaleTimeString();
       lines.push(`### ${sender} (${time})`);
       lines.push('');
+      if (msg.toolExecutions && msg.toolExecutions.length > 0) {
+        lines.push('**Agent Tools Executed:**');
+        for (const t of msg.toolExecutions) {
+          lines.push(`- Tool: \`${t.toolName}\` | Status: ${t.status}`);
+          lines.push(`  - Input: \`${JSON.stringify(t.args)}\``);
+          lines.push(`  - Output: \`${JSON.stringify(t.result)}\``);
+        }
+        lines.push('');
+      }
       lines.push(msg.content);
       lines.push('');
     }
@@ -306,6 +334,7 @@ export default function App() {
         const decoder = new TextDecoder();
         let accumulatedText = '';
         let buffer = '';
+        const currentTools: ToolExecution[] = [];
 
         while (isStreamingRef.current) {
           const { done, value } = await reader.read();
@@ -326,8 +355,66 @@ export default function App() {
               if (parsed.error) {
                 throw new Error(parsed.error);
               }
-              if (parsed.text) {
-                accumulatedText += parsed.text;
+
+              if (parsed.type === 'tool_start') {
+                const newTool: ToolExecution = {
+                  id: parsed.id,
+                  toolName: parsed.toolName,
+                  args: parsed.args || {},
+                  status: 'executing',
+                  timestamp: Date.now(),
+                };
+                currentTools.push(newTool);
+
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== conversationId) return c;
+                    const msgs = [...c.messages];
+                    const last = msgs[msgs.length - 1];
+                    if (last && last.role === 'model') {
+                      msgs[msgs.length - 1] = {
+                        ...last,
+                        toolExecutions: [...currentTools],
+                      };
+                    }
+                    return { ...c, messages: msgs, updatedAt: Date.now() };
+                  })
+                );
+              } else if (parsed.type === 'tool_result') {
+                const idx = currentTools.findIndex((t) => t.id === parsed.id);
+                const updatedTool: ToolExecution = {
+                  id: parsed.id,
+                  toolName: parsed.toolName,
+                  args: parsed.args || {},
+                  result: parsed.result,
+                  error: parsed.error,
+                  status: parsed.status,
+                  timestamp: parsed.timestamp || Date.now(),
+                };
+
+                if (idx >= 0) {
+                  currentTools[idx] = updatedTool;
+                } else {
+                  currentTools.push(updatedTool);
+                }
+
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== conversationId) return c;
+                    const msgs = [...c.messages];
+                    const last = msgs[msgs.length - 1];
+                    if (last && last.role === 'model') {
+                      msgs[msgs.length - 1] = {
+                        ...last,
+                        toolExecutions: [...currentTools],
+                      };
+                    }
+                    return { ...c, messages: msgs, updatedAt: Date.now() };
+                  })
+                );
+              } else if (parsed.type === 'text' || parsed.text) {
+                const textChunk = parsed.text || '';
+                accumulatedText += textChunk;
 
                 setConversations((prev) =>
                   prev.map((c) => {
@@ -339,6 +426,22 @@ export default function App() {
                         ...last,
                         content: accumulatedText,
                         status: 'streaming',
+                        toolExecutions: currentTools.length > 0 ? [...currentTools] : last.toolExecutions,
+                      };
+                    }
+                    return { ...c, messages: msgs, updatedAt: Date.now() };
+                  })
+                );
+              } else if (parsed.type === 'complete' && parsed.toolExecutions) {
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== conversationId) return c;
+                    const msgs = [...c.messages];
+                    const last = msgs[msgs.length - 1];
+                    if (last && last.role === 'model') {
+                      msgs[msgs.length - 1] = {
+                        ...last,
+                        toolExecutions: parsed.toolExecutions,
                       };
                     }
                     return { ...c, messages: msgs, updatedAt: Date.now() };
@@ -364,6 +467,7 @@ export default function App() {
                   ...last,
                   content: accumulatedText || last.content,
                   status: 'complete',
+                  toolExecutions: currentTools.length > 0 ? [...currentTools] : last.toolExecutions,
                 };
               }
               return { ...c, messages: msgs, updatedAt: Date.now() };
@@ -399,6 +503,7 @@ export default function App() {
               msgs[msgs.length - 1] = {
                 ...last,
                 content: data.text || '',
+                toolExecutions: data.toolExecutions || undefined,
                 status: 'complete',
               };
             }
@@ -438,10 +543,16 @@ export default function App() {
   const handleSendMessage = async (content: string, attachments?: FileAttachment[]) => {
     if (!activeConversation) return;
 
+    const trimmed = content.trim();
+    // TEST 6: Reject empty input without making an API request
+    if (!trimmed && (!attachments || attachments.length === 0)) {
+      return;
+    }
+
     const userMessage: Message = {
       id: `msg_${Date.now()}_u`,
       role: 'user',
-      content,
+      content: trimmed,
       timestamp: Date.now(),
       status: 'complete',
       attachments,
@@ -458,7 +569,7 @@ export default function App() {
     const isFirstMessage = activeConversation.messages.length === 0;
     const defaultTitle = attachments && attachments.length > 0 ? `File: ${attachments[0].name}` : 'New Conversation';
     const newTitle = isFirstMessage
-      ? (content.trim() ? content.slice(0, 36) + (content.length > 36 ? '...' : '') : defaultTitle)
+      ? (trimmed ? trimmed.slice(0, 36) + (trimmed.length > 36 ? '...' : '') : defaultTitle)
       : activeConversation.title;
 
     const updatedMessages = [...activeConversation.messages, userMessage, modelPlaceholder];
@@ -485,7 +596,7 @@ export default function App() {
   const handleRegenerate = async () => {
     if (!activeConversation || activeConversation.messages.length === 0) return;
 
-    let updatedMessages = [...activeConversation.messages];
+    const updatedMessages = [...activeConversation.messages];
     if (updatedMessages[updatedMessages.length - 1].role === 'model') {
       updatedMessages.pop();
     }
@@ -603,6 +714,18 @@ export default function App() {
           settings={settings}
           onUpdateSettings={handleUpdateSettings}
         />
+
+        {/* Missing API Key Alert Banner */}
+        {hasApiKey === false && (
+          <div className="bg-amber-950/70 border-b border-amber-800/80 px-4 py-2 flex items-center justify-between text-xs text-amber-200 shrink-0">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>GEMINI_API_KEY Missing:</strong> Configure <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-amber-700/60 font-mono text-amber-300">GEMINI_API_KEY=your_key</code> in your <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-amber-700/60 font-mono text-amber-300">.env</code> file to enable live Gemini API and Agent Tool execution.
+              </span>
+            </div>
+          </div>
+        )}
 
         <main
           ref={scrollContainerRef}

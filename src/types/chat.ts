@@ -11,6 +11,16 @@ export interface FileAttachment {
   content?: string;
 }
 
+export interface ToolExecution {
+  id: string;
+  toolName: string;
+  args: Record<string, any>;
+  result?: any;
+  status: 'executing' | 'Successful' | 'Error';
+  error?: string;
+  timestamp?: number;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -18,6 +28,7 @@ export interface Message {
   timestamp: number;
   status: MessageStatus;
   attachments?: FileAttachment[];
+  toolExecutions?: ToolExecution[];
   error?: string;
   feedback?: 'like' | 'dislike' | null;
 }

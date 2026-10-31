@@ -3,11 +3,8 @@ import {
   Menu,
   Sparkles,
   ChevronDown,
-  Download,
-  Trash2,
-  Sliders,
   Check,
-  Plus,
+  Wrench,
 } from 'lucide-react';
 import { Conversation, AppSettings } from '../types/chat';
 import { AVAILABLE_MODELS } from '../constants/presets';
@@ -26,10 +23,6 @@ interface TopHeaderProps {
 export const TopHeader: React.FC<TopHeaderProps> = ({
   conversation,
   onToggleSidebar,
-  onNewChat,
-  onClearChat,
-  onExportChat,
-  onOpenSettings,
   settings,
   onUpdateSettings,
 }) => {
@@ -53,6 +46,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-semibold text-slate-100 text-sm truncate max-w-[160px] sm:max-w-xs md:max-w-md">
             {conversation?.title || 'New Conversation'}
+          </span>
+          <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-950/70 text-indigo-300 border border-indigo-800/60">
+            <Wrench className="w-2.5 h-2.5" />
+            Agent Tools Active
           </span>
         </div>
       </div>
@@ -105,7 +102,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                           {model.description}
                         </p>
                       </div>
-                      {isSelected && <Check className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />}
+                      {isSelected && (
+                        <Check className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                      )}
                     </button>
                   );
                 })}
@@ -113,42 +112,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </div>
           </>
         )}
-      </div>
-
-      <div className="flex items-center gap-1 shrink-0">
-        <button
-          onClick={onOpenSettings}
-          className="p-1.5 text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800/80 transition-colors"
-          title="Parameters & Persona"
-        >
-          <Sliders className="w-4 h-4" />
-        </button>
-
-        <button
-          onClick={onExportChat}
-          className="hidden sm:flex p-1.5 text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800/80 transition-colors"
-          title="Export Conversation"
-        >
-          <Download className="w-4 h-4" />
-        </button>
-
-        {conversation?.messages?.length > 0 && (
-          <button
-            onClick={onClearChat}
-            className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800/80 transition-colors"
-            title="Clear Chat Messages"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        )}
-
-        <button
-          onClick={onNewChat}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">New Chat</span>
-        </button>
       </div>
     </header>
   );
