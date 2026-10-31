@@ -4,6 +4,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { TOOL_DECLARATIONS, executeTool, ToolExecutionRecord } from './tools';
+import {
+  generateContentWithResilience,
+  formatFriendlyErrorMessage,
+  isTransientError,
+} from './geminiResilience';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,27 +27,12 @@ const ai = new GoogleGenAI({
     headers: {
       'User-Agent': 'gemini-toolbox-ai',
     },
+    timeout: 60000,
+    retryOptions: {
+      attempts: 1, // Single retry control managed by exponential backoff & fallback in geminiResilience
+    },
   },
 });
-
-function formatErrorMessage(error: any): string {
-  if (!error) return 'An unexpected error occurred.';
-  if (typeof error === 'string') {
-    try {
-      const parsed = JSON.parse(error);
-      if (parsed?.error?.message) return parsed.error.message;
-    } catch {}
-    return error;
-  }
-  if (error.message) {
-    try {
-      const parsed = JSON.parse(error.message);
-      if (parsed?.error?.message) return parsed.error.message;
-    } catch {}
-    return error.message;
-  }
-  return String(error);
-}
 
 function normalizeContents(contents: Array<{ role: 'user' | 'model'; parts: any[] }>) {
   const normalized: Array<{ role: 'user' | 'model'; parts: any[] }> = [];
@@ -88,6 +78,12 @@ RULES FOR TOOL EXECUTION:
   const config: any = {
     tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
     systemInstruction: finalInstruction,
+    httpOptions: {
+      timeout: 60000,
+      retryOptions: {
+        attempts: 1,
+      },
+    },
   };
 
   if (typeof temperature === 'number') {
@@ -149,6 +145,7 @@ app.get('/api/health', (_req, res) => {
     version: '1.0.0',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim() !== ''),
     defaultModel: 'gemini-3.8-flash',
+    fallbackModel: 'gemini-3.1-flash-lite',
     tools: ['calculate', 'convert_units', 'calculate_percentage'],
   });
 });
@@ -184,7 +181,7 @@ app.get('/api/tools', (_req, res) => {
   });
 });
 
-// Non-streaming endpoint
+// Non-streaming endpoint with retry and fallback
 app.post('/api/chat', async (req, res) => {
   const { messages, model, systemInstruction, temperature } = req.body;
 
@@ -202,28 +199,39 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const targetModel = resolveModelName(model);
+  const fallbackModel = targetModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : undefined;
   const config = buildToolEnabledConfig(systemInstruction, temperature);
 
   const MAX_ROUNDS = 5;
   let round = 0;
   const currentContents: any[] = [...contents];
   const executedTools: ToolExecutionRecord[] = [];
+  let finalModelUsed = targetModel;
+  let fallbackWasUsed = false;
 
   try {
     while (round < MAX_ROUNDS) {
       round++;
-      const response = await ai.models.generateContent({
-        model: targetModel,
+      const genResult = await generateContentWithResilience(ai, {
+        primaryModel: targetModel,
+        fallbackModel,
         contents: currentContents,
         config,
       });
 
+      finalModelUsed = genResult.usedModel;
+      if (genResult.fallbackUsed) fallbackWasUsed = true;
+
+      const response = genResult.response;
       const functionCalls = response.functionCalls;
+
       if (!functionCalls || functionCalls.length === 0) {
         // Model generated final textual response
         return res.json({
           text: response.text || '',
           toolExecutions: executedTools,
+          modelUsed: finalModelUsed,
+          fallbackUsed: fallbackWasUsed,
         });
       }
 
@@ -297,23 +305,26 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // If max rounds reached, do a final text generation without tools
-    const finalResponse = await ai.models.generateContent({
-      model: targetModel,
+    const finalGenResult = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      fallbackModel,
       contents: currentContents,
       config: { ...config, tools: [] },
     });
 
     res.json({
-      text: finalResponse.text || '',
+      text: finalGenResult.response.text || '',
       toolExecutions: executedTools,
+      modelUsed: finalGenResult.usedModel,
+      fallbackUsed: fallbackWasUsed || finalGenResult.fallbackUsed,
     });
   } catch (error: any) {
     console.error('Gemini API Error:', error);
-    res.status(500).json({ error: formatErrorMessage(error) });
+    res.status(isTransientError(error) ? 503 : 500).json({ error: formatFriendlyErrorMessage(error) });
   }
 });
 
-// Streaming endpoint
+// Streaming endpoint with retry, fallback and live status events
 app.post('/api/chat/stream', async (req, res) => {
   const { messages, model, systemInstruction, temperature } = req.body;
 
@@ -347,6 +358,7 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 
   const targetModel = resolveModelName(model);
+  const fallbackModel = targetModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : undefined;
   const config = buildToolEnabledConfig(systemInstruction, temperature);
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -363,47 +375,45 @@ app.post('/api/chat/stream', async (req, res) => {
   let round = 0;
   const currentContents: any[] = [...contents];
   const executedTools: ToolExecutionRecord[] = [];
+  let finalModelUsed = targetModel;
+  let fallbackWasUsed = false;
 
   try {
     while (round < MAX_ROUNDS) {
       if (isClientDisconnected) break;
       round++;
 
-      // Check whether Gemini wants to call tools
-      const checkResponse = await ai.models.generateContent({
-        model: targetModel,
+      const genResult = await generateContentWithResilience(ai, {
+        primaryModel: targetModel,
+        fallbackModel,
         contents: currentContents,
         config,
+        onStatus: (st) => {
+          if (!isClientDisconnected) {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'status',
+                message: st.message,
+                model: st.model,
+                isFallback: st.isFallback,
+              })}\n\n`
+            );
+          }
+        },
       });
 
+      finalModelUsed = genResult.usedModel;
+      if (genResult.fallbackUsed) fallbackWasUsed = true;
+
+      const checkResponse = genResult.response;
       const functionCalls = checkResponse.functionCalls;
 
       if (!functionCalls || functionCalls.length === 0) {
-        // No function calls! Stream the text response directly.
-        // We can either emit checkResponse.text or stream if this was round 1
-        if (round === 1) {
-          // Stream directly for best real-time experience
-          const responseStream = await ai.models.generateContentStream({
-            model: targetModel,
-            contents: currentContents,
-            config,
-          });
-
-          for await (const chunk of responseStream) {
-            if (isClientDisconnected) break;
-            const text = chunk.text;
-            if (text) {
-              res.write(`data: ${JSON.stringify({ type: 'text', text })}\n\n`);
-            }
-          }
-        } else {
-          // Model completed answering based on tool results
-          const finalText = checkResponse.text || '';
-          if (finalText && !isClientDisconnected) {
-            res.write(`data: ${JSON.stringify({ type: 'text', text: finalText })}\n\n`);
-          }
+        // Emit final text
+        const finalText = checkResponse.text || '';
+        if (finalText && !isClientDisconnected) {
+          res.write(`data: ${JSON.stringify({ type: 'text', text: finalText })}\n\n`);
         }
-
         break;
       }
 
@@ -430,7 +440,6 @@ app.post('/api/chat/stream', async (req, res) => {
         if (isClientDisconnected) break;
         const execId = `tool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-        // Send tool start event to frontend
         res.write(
           `data: ${JSON.stringify({
             type: 'tool_start',
@@ -453,7 +462,6 @@ app.post('/api/chat/stream', async (req, res) => {
           };
           executedTools.push(rec);
 
-          // Send tool executed event to frontend
           res.write(
             `data: ${JSON.stringify({
               type: 'tool_result',
@@ -507,14 +515,21 @@ app.post('/api/chat/stream', async (req, res) => {
     }
 
     if (!isClientDisconnected) {
-      res.write(`data: ${JSON.stringify({ type: 'complete', toolExecutions: executedTools })}\n\n`);
+      res.write(
+        `data: ${JSON.stringify({
+          type: 'complete',
+          toolExecutions: executedTools,
+          modelUsed: finalModelUsed,
+          fallbackUsed: fallbackWasUsed,
+        })}\n\n`
+      );
       res.write('data: [DONE]\n\n');
       res.end();
     }
   } catch (error: any) {
     console.error('Gemini stream error:', error);
     if (!isClientDisconnected) {
-      const errorMsg = formatErrorMessage(error);
+      const errorMsg = formatFriendlyErrorMessage(error);
       res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();

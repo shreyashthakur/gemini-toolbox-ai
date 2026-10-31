@@ -356,7 +356,24 @@ export default function App() {
                 throw new Error(parsed.error);
               }
 
-              if (parsed.type === 'tool_start') {
+              if (parsed.type === 'status') {
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== conversationId) return c;
+                    const msgs = [...c.messages];
+                    const last = msgs[msgs.length - 1];
+                    if (last && last.role === 'model') {
+                      msgs[msgs.length - 1] = {
+                        ...last,
+                        statusMessage: parsed.message,
+                        modelUsed: parsed.model || last.modelUsed,
+                        isFallback: parsed.isFallback ?? last.isFallback,
+                      };
+                    }
+                    return { ...c, messages: msgs, updatedAt: Date.now() };
+                  })
+                );
+              } else if (parsed.type === 'tool_start') {
                 const newTool: ToolExecution = {
                   id: parsed.id,
                   toolName: parsed.toolName,
@@ -432,7 +449,7 @@ export default function App() {
                     return { ...c, messages: msgs, updatedAt: Date.now() };
                   })
                 );
-              } else if (parsed.type === 'complete' && parsed.toolExecutions) {
+              } else if (parsed.type === 'complete') {
                 setConversations((prev) =>
                   prev.map((c) => {
                     if (c.id !== conversationId) return c;
@@ -441,7 +458,10 @@ export default function App() {
                     if (last && last.role === 'model') {
                       msgs[msgs.length - 1] = {
                         ...last,
-                        toolExecutions: parsed.toolExecutions,
+                        toolExecutions: parsed.toolExecutions || last.toolExecutions,
+                        modelUsed: parsed.model || last.modelUsed,
+                        isFallback: parsed.isFallback ?? last.isFallback,
+                        statusMessage: undefined,
                       };
                     }
                     return { ...c, messages: msgs, updatedAt: Date.now() };
@@ -505,6 +525,9 @@ export default function App() {
                 content: data.text || '',
                 toolExecutions: data.toolExecutions || undefined,
                 status: 'complete',
+                modelUsed: data.modelUsed,
+                isFallback: data.fallbackUsed,
+                statusMessage: undefined,
               };
             }
             return { ...c, messages: msgs, updatedAt: Date.now() };

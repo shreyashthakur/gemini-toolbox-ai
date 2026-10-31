@@ -31,6 +31,9 @@ export interface Message {
   toolExecutions?: ToolExecution[];
   error?: string;
   feedback?: 'like' | 'dislike' | null;
+  statusMessage?: string;
+  modelUsed?: string;
+  isFallback?: boolean;
 }
 
 export interface Conversation {

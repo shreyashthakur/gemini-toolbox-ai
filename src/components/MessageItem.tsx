@@ -135,6 +135,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   Agent Tools Used
                 </span>
               )}
+              {!isUser && message.modelUsed && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                    message.isFallback
+                      ? 'bg-amber-950/80 text-amber-300 border border-amber-800/70'
+                      : 'bg-slate-800/80 text-slate-400 border border-slate-700/70'
+                  }`}
+                  title={message.isFallback ? 'Automatic fallback used due to high demand on primary model' : 'Model used'}
+                >
+                  {message.isFallback ? `⚡ Fallback: ${message.modelUsed}` : message.modelUsed}
+                </span>
+              )}
             </div>
 
             {isUser && !isEditing && (
@@ -245,8 +257,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                         <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '150ms' }} />
                         <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '300ms' }} />
                       </div>
-                      <span className="ml-1 text-xs font-medium text-slate-400">
-                        {isExecutingTools ? 'Executing agent tool...' : 'Gemini is thinking...'}
+                      <span className={`ml-1 text-xs font-medium ${message.statusMessage ? 'text-amber-400' : 'text-slate-400'}`}>
+                        {message.statusMessage || (isExecutingTools ? 'Executing agent tool...' : 'Gemini is thinking...')}
                       </span>
                     </div>
                   ) : (
