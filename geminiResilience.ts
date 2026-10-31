@@ -15,6 +15,53 @@ export interface GenerationResult {
   retriesAttempted: number;
 }
 
+export interface StreamGenerationResult {
+  fullText: string;
+  functionCalls: any[];
+  usedModel: string;
+  fallbackUsed: boolean;
+  candidateContent?: any;
+}
+
+/**
+ * Determines whether the error represents a daily quota exhaustion
+ * (e.g. Free Tier limit of 20 requests/day exceeded on gemini-3.8-flash).
+ * In such cases, exponential backoff within seconds will fail, so we fallback immediately.
+ */
+export function isDailyQuotaExhausted(error: any): boolean {
+  if (!error) return false;
+  const msg = (error.message || String(error)).toLowerCase();
+  return (
+    msg.includes('per day limit exceeded') ||
+    msg.includes('generaterequestsperday') ||
+    msg.includes('limit exceeded on free tier') ||
+    msg.includes('daily limit') ||
+    (msg.includes('retry in') && (msg.includes('h') || msg.includes('hour')))
+  );
+}
+
+/**
+ * Determines whether an error is eligible for fallback to secondary model.
+ */
+export function canFallbackForError(error: any): boolean {
+  if (!error) return false;
+  const status = error.status || error.code || error.statusCode || error.httpStatus;
+  const msg = (error.message || String(error)).toLowerCase();
+
+  // Strict non-fallback: 400, 401, 403, 404, invalid API key
+  if (status === 400 || status === 401 || status === 403 || status === 404) {
+    return false;
+  }
+  if (msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('invalid api key')) {
+    return false;
+  }
+  if (msg.includes('invalid argument') || msg.includes('bad request')) {
+    return false;
+  }
+
+  return isTransientError(error) || isDailyQuotaExhausted(error) || status === 429 || status === 503;
+}
+
 /**
  * Determines whether an error from the Gemini API is transient and safe to retry.
  * Retries: 503 (Unavailable / High Demand), 429 (Rate Limit / Resource Exhausted),
@@ -35,6 +82,10 @@ export function isTransientError(error: any): boolean {
     return false;
   }
   if (msg.includes('invalid argument') || msg.includes('bad request')) {
+    return false;
+  }
+  if (isDailyQuotaExhausted(error)) {
+    // Daily quota exhaustion cannot be resolved by short-term retries
     return false;
   }
   if (msg.includes('is no longer available to new users') || msg.includes('not_found')) {
@@ -239,12 +290,12 @@ export async function generateContentWithResilience(
       retriesAttempted,
     };
   } catch (primaryErr: any) {
-    // If error is not transient, or no fallback model available, propagate immediately
-    if (!isTransientError(primaryErr) || !fallbackModel || fallbackModel === primaryModel) {
+    // If error is not eligible for fallback, or no fallback model available, propagate immediately
+    if (!canFallbackForError(primaryErr) || !fallbackModel || fallbackModel === primaryModel) {
       throw primaryErr;
     }
 
-    // 2. Primary model failed with transient 503/high demand -> Fallback model
+    // 2. Primary model failed -> Fallback model
     const fallbackNotice = `Switching to fallback model (${fallbackModel}) due to high demand on ${primaryModel}...`;
     console.warn(`[Gemini Fallback] ${fallbackNotice}`);
 
@@ -282,6 +333,151 @@ export async function generateContentWithResilience(
         fallbackUsed: true,
         retriesAttempted,
       };
+    } catch (fallbackErr: any) {
+      console.error(`[Gemini Fallback Failed] Both ${primaryModel} and ${fallbackModel} failed:`, fallbackErr);
+      throw fallbackErr;
+    }
+  }
+}
+
+/**
+ * Calls Gemini generateContentStream with real-time token streaming,
+ * immediate token emission via onChunk, and automatic fallback.
+ */
+export async function generateContentStreamWithResilience(
+  ai: GoogleGenAI,
+  params: {
+    primaryModel: string;
+    fallbackModel?: string;
+    contents: any[];
+    config: any;
+    requestTimeoutMs?: number;
+    onStatus?: (status: ResilienceStatus) => void;
+    onChunk?: (text: string) => void;
+  }
+): Promise<StreamGenerationResult> {
+  const { ai: genAI, primaryModel, fallbackModel, contents, config, onStatus, onChunk } = { ai, ...params };
+  const requestTimeoutMs = params.requestTimeoutMs ?? 60000;
+
+  const primaryConfig = {
+    ...config,
+    httpOptions: {
+      ...config?.httpOptions,
+      timeout: requestTimeoutMs,
+      retryOptions: { attempts: 1 },
+    },
+  };
+
+  const fallbackConfig = fallbackModel
+    ? {
+        ...config,
+        httpOptions: {
+          ...config?.httpOptions,
+          timeout: requestTimeoutMs,
+          retryOptions: { attempts: 1 },
+        },
+      }
+    : primaryConfig;
+
+  const consumeStream = async (modelToUse: string, configToUse: any): Promise<StreamGenerationResult> => {
+    let timer: any;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Request to ${modelToUse} timed out after ${requestTimeoutMs}ms`));
+      }, requestTimeoutMs);
+    });
+
+    const streamPromise = (async () => {
+      const stream = await genAI.models.generateContentStream({
+        model: modelToUse,
+        contents,
+        config: configToUse,
+      });
+
+      let fullText = '';
+      const functionCalls: any[] = [];
+      const accumulatedParts: any[] = [];
+
+      for await (const chunk of stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts;
+        if (parts && Array.isArray(parts)) {
+          for (const part of parts) {
+            if (part.functionCall) {
+              accumulatedParts.push(part);
+            }
+          }
+        }
+        if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+          functionCalls.push(...chunk.functionCalls);
+        }
+
+        const textParts = parts
+          ?.filter((p: any) => typeof p.text === 'string' && p.text.length > 0)
+          ?.map((p: any) => p.text)
+          ?.join('');
+
+        const textChunk = textParts || '';
+        if (textChunk) {
+          fullText += textChunk;
+          accumulatedParts.push({ text: textChunk });
+          if (onChunk) {
+            onChunk(textChunk);
+          }
+        }
+      }
+
+      return {
+        fullText,
+        functionCalls,
+        usedModel: modelToUse,
+        fallbackUsed: modelToUse === fallbackModel,
+        candidateContent: accumulatedParts.length > 0 ? { role: 'model', parts: accumulatedParts } : null,
+      };
+    })();
+
+    try {
+      return await Promise.race([streamPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // 1. Attempt Primary Model with backoff
+  try {
+    return await callWithExponentialBackoff(
+      () => consumeStream(primaryModel, primaryConfig),
+      {
+        maxRetries: 2,
+        label: primaryModel,
+        onRetry: onStatus,
+      }
+    );
+  } catch (primaryErr: any) {
+    if (!canFallbackForError(primaryErr) || !fallbackModel || fallbackModel === primaryModel) {
+      throw primaryErr;
+    }
+
+    const fallbackNotice = `Switching to fallback model (${fallbackModel}) due to high demand on ${primaryModel}...`;
+    console.warn(`[Gemini Fallback] ${fallbackNotice}`);
+
+    if (onStatus) {
+      onStatus({
+        message: fallbackNotice,
+        model: fallbackModel,
+        isFallback: true,
+      });
+    }
+
+    // 2. Attempt Fallback Model with backoff
+    try {
+      return await callWithExponentialBackoff(
+        () => consumeStream(fallbackModel, fallbackConfig),
+        {
+          maxRetries: 3,
+          label: fallbackModel,
+          onRetry: onStatus,
+        }
+      );
     } catch (fallbackErr: any) {
       console.error(`[Gemini Fallback Failed] Both ${primaryModel} and ${fallbackModel} failed:`, fallbackErr);
       throw fallbackErr;

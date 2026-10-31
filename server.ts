@@ -6,6 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import { TOOL_DECLARATIONS, executeTool, ToolExecutionRecord } from './tools';
 import {
   generateContentWithResilience,
+  generateContentStreamWithResilience,
   formatFriendlyErrorMessage,
   isTransientError,
 } from './geminiResilience';
@@ -83,6 +84,77 @@ RULES FOR TOOL EXECUTION:
       retryOptions: {
         attempts: 1,
       },
+    },
+  };
+
+  if (typeof temperature === 'number') {
+    config.temperature = Math.max(0, Math.min(2, temperature));
+  }
+
+  return config;
+}
+
+export function isSimpleGreeting(query: string): boolean {
+  if (!query) return false;
+  const clean = query.trim().toLowerCase().replace(/[?!.,]+$/g, '').trim();
+  const greetings = [
+    'hi',
+    'hello',
+    'hey',
+    'howdy',
+    'greetings',
+    'good morning',
+    'good afternoon',
+    'good evening',
+    'how are you',
+    'how are you doing',
+    'what can you do',
+    'who are you',
+    'what is your name',
+    'tell me about yourself',
+    'help',
+    'what are your capabilities',
+    'thanks',
+    'thank you',
+    'bye',
+    'goodbye',
+  ];
+  return greetings.includes(clean);
+}
+
+export function queryRequiresTools(query: string): boolean {
+  if (!query || !query.trim()) return false;
+  if (isSimpleGreeting(query)) return false;
+
+  const lower = query.toLowerCase();
+
+  // Mathematical equations, operators, or keywords
+  if (/\d+\s*[\+\-\*\/\%\^×÷]\s*\d+/.test(lower)) return true;
+  if (/\b(calculate|compute|solve|evaluate)\b/i.test(lower)) return true;
+  if (/\b(convert|conversion)\b/i.test(lower)) return true;
+  if (/\b(km|kilometer|mile|meter|feet|foot|kg|kilogram|pound|lb|celsius|fahrenheit|liter|ml|milliliter)s?\b/i.test(lower)) return true;
+  if (/\b(percent|percentage)\b/i.test(lower) || lower.includes('%')) return true;
+  if (/\bsqrt\s*\(|\bsin\s*\(|\bcos\s*\(|\btan\s*\(|\blog\s*\(/i.test(lower)) return true;
+
+  if (/\b\d+\b/.test(lower) && (lower.includes('plus') || lower.includes('minus') || lower.includes('times') || lower.includes('divided') || lower.includes('multiplied') || lower.includes('sum') || lower.includes('add') || lower.includes('subtract') || lower.includes('ratio') || lower.includes('increase') || lower.includes('decrease'))) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildConversationalConfig(systemInstruction?: string, temperature?: number) {
+  const basePrompt = `You are Gemini Toolbox AI, an articulate, friendly, and helpful AI assistant equipped with specialized agent tools (calculation, unit conversion, and percentage analysis). Answer warmly, clearly, and concisely.`;
+
+  const instruction = systemInstruction && systemInstruction.trim()
+    ? `${basePrompt}\n\nUser Persona Instructions:\n${systemInstruction.trim()}`
+    : basePrompt;
+
+  const config: any = {
+    systemInstruction: instruction,
+    httpOptions: {
+      timeout: 60000,
+      retryOptions: { attempts: 1 },
     },
   };
 
@@ -183,6 +255,7 @@ app.get('/api/tools', (_req, res) => {
 
 // Non-streaming endpoint with retry and fallback
 app.post('/api/chat', async (req, res) => {
+  const reqStart = Date.now();
   const { messages, model, systemInstruction, temperature } = req.body;
 
   if (!process.env.GEMINI_API_KEY || !process.env.GEMINI_API_KEY.trim()) {
@@ -200,8 +273,39 @@ app.post('/api/chat', async (req, res) => {
 
   const targetModel = resolveModelName(model);
   const fallbackModel = targetModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : undefined;
-  const config = buildToolEnabledConfig(systemInstruction, temperature);
 
+  const lastUserMessage = [...contents].reverse().find((c) => c.role === 'user');
+  const latestUserText = lastUserMessage?.parts
+    ?.filter((p: any) => p.text)
+    ?.map((p: any) => p.text)
+    ?.join(' ') || '';
+  const needsTools = queryRequiresTools(latestUserText);
+
+  // Fast path for simple conversational requests
+  if (!needsTools) {
+    try {
+      const config = buildConversationalConfig(systemInstruction, temperature);
+      const genResult = await generateContentWithResilience(ai, {
+        primaryModel: targetModel,
+        fallbackModel,
+        contents,
+        config,
+      });
+
+      console.log(`[CHAT NON-STREAM COMPLETE] Conversational in ${Date.now() - reqStart}ms | Model: ${genResult.usedModel}`);
+      return res.json({
+        text: genResult.response.text || '',
+        toolExecutions: [],
+        modelUsed: genResult.usedModel,
+        fallbackUsed: genResult.fallbackUsed,
+      });
+    } catch (error: any) {
+      console.error('Gemini API Error:', error);
+      return res.status(isTransientError(error) ? 503 : 500).json({ error: formatFriendlyErrorMessage(error) });
+    }
+  }
+
+  const config = buildToolEnabledConfig(systemInstruction, temperature);
   const MAX_ROUNDS = 5;
   let round = 0;
   const currentContents: any[] = [...contents];
@@ -326,6 +430,7 @@ app.post('/api/chat', async (req, res) => {
 
 // Streaming endpoint with retry, fallback and live status events
 app.post('/api/chat/stream', async (req, res) => {
+  const reqStart = Date.now();
   const { messages, model, systemInstruction, temperature } = req.body;
 
   if (!process.env.GEMINI_API_KEY || !process.env.GEMINI_API_KEY.trim()) {
@@ -359,7 +464,15 @@ app.post('/api/chat/stream', async (req, res) => {
 
   const targetModel = resolveModelName(model);
   const fallbackModel = targetModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : undefined;
-  const config = buildToolEnabledConfig(systemInstruction, temperature);
+
+  const lastUserMessage = [...contents].reverse().find((c) => c.role === 'user');
+  const latestUserText = lastUserMessage?.parts
+    ?.filter((p: any) => p.text)
+    ?.map((p: any) => p.text)
+    ?.join(' ') || '';
+  const needsTools = queryRequiresTools(latestUserText);
+
+  console.log(`[CHAT STREAM START] Time: ${new Date().toISOString()} | Query: "${latestUserText.slice(0, 60)}" | Target: ${targetModel} | NeedsTools: ${needsTools}`);
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -367,171 +480,209 @@ app.post('/api/chat/stream', async (req, res) => {
   res.flushHeaders?.();
 
   let isClientDisconnected = false;
-  req.on('close', () => {
-    isClientDisconnected = true;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      isClientDisconnected = true;
+    }
   });
 
-  const MAX_ROUNDS = 5;
-  let round = 0;
-  const currentContents: any[] = [...contents];
+  let firstTokenEmitted = false;
   const executedTools: ToolExecutionRecord[] = [];
+  let activeModel = targetModel;
   let finalModelUsed = targetModel;
   let fallbackWasUsed = false;
 
-  try {
-    while (round < MAX_ROUNDS) {
-      if (isClientDisconnected) break;
-      round++;
+  const sendEvent = (data: any) => {
+    if (!isClientDisconnected && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+  };
 
-      const genResult = await generateContentWithResilience(ai, {
-        primaryModel: targetModel,
+  try {
+    if (!needsTools) {
+      // Direct conversational streaming - fast path
+      const config = buildConversationalConfig(systemInstruction, temperature);
+      const streamResult = await generateContentStreamWithResilience(ai, {
+        primaryModel: activeModel,
         fallbackModel,
-        contents: currentContents,
+        contents,
         config,
         onStatus: (st) => {
-          if (!isClientDisconnected) {
-            res.write(
-              `data: ${JSON.stringify({
-                type: 'status',
-                message: st.message,
-                model: st.model,
-                isFallback: st.isFallback,
-              })}\n\n`
-            );
+          sendEvent({
+            type: 'status',
+            message: st.message,
+            model: st.model,
+            isFallback: st.isFallback,
+          });
+        },
+        onChunk: (chunk) => {
+          if (!firstTokenEmitted) {
+            firstTokenEmitted = true;
+            console.log(`[FIRST TOKEN RECEIVED] TTFB: ${Date.now() - reqStart}ms`);
           }
+          sendEvent({ type: 'text', text: chunk });
         },
       });
 
-      finalModelUsed = genResult.usedModel;
-      if (genResult.fallbackUsed) fallbackWasUsed = true;
+      finalModelUsed = streamResult.usedModel;
+      fallbackWasUsed = streamResult.fallbackUsed;
+    } else {
+      // Tool-enabled flow with multi-turn execution
+      const toolConfig = buildToolEnabledConfig(systemInstruction, temperature);
+      const MAX_ROUNDS = 5;
+      let round = 0;
+      const currentContents: any[] = [...contents];
 
-      const checkResponse = genResult.response;
-      const functionCalls = checkResponse.functionCalls;
-
-      if (!functionCalls || functionCalls.length === 0) {
-        // Emit final text
-        const finalText = checkResponse.text || '';
-        if (finalText && !isClientDisconnected) {
-          res.write(`data: ${JSON.stringify({ type: 'text', text: finalText })}\n\n`);
-        }
-        break;
-      }
-
-      // Add model turn with function calls to contents
-      const candidateContent = checkResponse.candidates?.[0]?.content;
-      if (candidateContent) {
-        currentContents.push(candidateContent);
-      } else {
-        currentContents.push({
-          role: 'model',
-          parts: functionCalls.map((fc) => ({
-            functionCall: {
-              name: fc.name,
-              args: fc.args,
-              id: fc.id,
-            },
-          })),
-        });
-      }
-
-      // Execute each tool and broadcast real-time events
-      const toolResponseParts: any[] = [];
-      for (const call of functionCalls) {
+      while (round < MAX_ROUNDS) {
         if (isClientDisconnected) break;
-        const execId = `tool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        round++;
 
-        res.write(
-          `data: ${JSON.stringify({
+        const streamResult = await generateContentStreamWithResilience(ai, {
+          primaryModel: activeModel,
+          fallbackModel,
+          contents: currentContents,
+          config: toolConfig,
+          onStatus: (st) => {
+            sendEvent({
+              type: 'status',
+              message: st.message,
+              model: st.model,
+              isFallback: st.isFallback,
+            });
+          },
+          onChunk: (chunk) => {
+            if (!firstTokenEmitted) {
+              firstTokenEmitted = true;
+              console.log(`[FIRST TOKEN RECEIVED] TTFB: ${Date.now() - reqStart}ms`);
+            }
+            sendEvent({ type: 'text', text: chunk });
+          },
+        });
+
+        activeModel = streamResult.usedModel;
+        finalModelUsed = streamResult.usedModel;
+        if (streamResult.fallbackUsed) fallbackWasUsed = true;
+
+        const functionCalls = streamResult.functionCalls;
+        if (!functionCalls || functionCalls.length === 0) {
+          // Model finished generating textual answer
+          break;
+        }
+
+        // Add candidate content or model turn with function calls
+        if (streamResult.candidateContent) {
+          currentContents.push(streamResult.candidateContent);
+        } else {
+          currentContents.push({
+            role: 'model',
+            parts: functionCalls.map((fc) => ({
+              functionCall: {
+                name: fc.name,
+                args: fc.args,
+                id: fc.id,
+              },
+            })),
+          });
+        }
+
+        // Execute tools
+        const toolResponseParts: any[] = [];
+        for (const call of functionCalls) {
+          if (isClientDisconnected) break;
+          const execId = `tool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const toolStart = Date.now();
+          console.log(`[TOOL START] ${call.name} with args:`, call.args);
+
+          sendEvent({
             type: 'tool_start',
             id: execId,
             toolName: call.name,
             args: call.args || {},
-          })}\n\n`
-        );
+          });
 
-        const toolExecution = await executeTool(call.name || '', call.args || {});
+          const toolExecution = await executeTool(call.name || '', call.args || {});
+          console.log(`[TOOL COMPLETE] ${call.name} in ${Date.now() - toolStart}ms | Success: ${toolExecution.success}`);
 
-        if (toolExecution.success) {
-          const rec: ToolExecutionRecord = {
-            id: execId,
-            toolName: call.name || 'unknown',
-            args: call.args || {},
-            result: toolExecution.data,
-            status: 'Successful',
-            timestamp: Date.now(),
-          };
-          executedTools.push(rec);
+          if (toolExecution.success) {
+            const rec: ToolExecutionRecord = {
+              id: execId,
+              toolName: call.name || 'unknown',
+              args: call.args || {},
+              result: toolExecution.data,
+              status: 'Successful',
+              timestamp: Date.now(),
+            };
+            executedTools.push(rec);
 
-          res.write(
-            `data: ${JSON.stringify({
+            sendEvent({
               type: 'tool_result',
               ...rec,
-            })}\n\n`
-          );
+            });
 
-          toolResponseParts.push({
-            functionResponse: {
-              name: call.name,
-              response: {
-                output: toolExecution.data,
+            toolResponseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: {
+                  output: toolExecution.data,
+                },
+                id: call.id,
               },
-              id: call.id,
-            },
-          });
-        } else {
-          const rec: ToolExecutionRecord = {
-            id: execId,
-            toolName: call.name || 'unknown',
-            args: call.args || {},
-            error: toolExecution.error,
-            status: 'Error',
-            timestamp: Date.now(),
-          };
-          executedTools.push(rec);
+            });
+          } else {
+            const rec: ToolExecutionRecord = {
+              id: execId,
+              toolName: call.name || 'unknown',
+              args: call.args || {},
+              error: toolExecution.error,
+              status: 'Error',
+              timestamp: Date.now(),
+            };
+            executedTools.push(rec);
 
-          res.write(
-            `data: ${JSON.stringify({
+            sendEvent({
               type: 'tool_result',
               ...rec,
-            })}\n\n`
-          );
+            });
 
-          toolResponseParts.push({
-            functionResponse: {
-              name: call.name,
-              response: {
-                error: toolExecution.error,
+            toolResponseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: {
+                  error: toolExecution.error,
+                },
+                id: call.id,
               },
-              id: call.id,
-            },
-          });
+            });
+          }
         }
-      }
 
-      currentContents.push({
-        role: 'user',
-        parts: toolResponseParts,
-      });
+        currentContents.push({
+          role: 'user',
+          parts: toolResponseParts,
+        });
+      }
     }
 
-    if (!isClientDisconnected) {
-      res.write(
-        `data: ${JSON.stringify({
-          type: 'complete',
-          toolExecutions: executedTools,
-          modelUsed: finalModelUsed,
-          fallbackUsed: fallbackWasUsed,
-        })}\n\n`
-      );
+    if (!isClientDisconnected && !res.writableEnded) {
+      sendEvent({
+        type: 'complete',
+        toolExecutions: executedTools,
+        model: finalModelUsed,
+        isFallback: fallbackWasUsed,
+      });
       res.write('data: [DONE]\n\n');
-      res.end();
     }
   } catch (error: any) {
     console.error('Gemini stream error:', error);
-    if (!isClientDisconnected) {
+    if (!isClientDisconnected && !res.writableEnded) {
       const errorMsg = formatFriendlyErrorMessage(error);
       res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
       res.write('data: [DONE]\n\n');
+    }
+  } finally {
+    const totalDuration = Date.now() - reqStart;
+    console.log(`[CHAT STREAM FINISHED] Duration: ${totalDuration}ms | Model: ${finalModelUsed} | Fallback: ${fallbackWasUsed}`);
+    if (!res.writableEnded) {
       res.end();
     }
   }
